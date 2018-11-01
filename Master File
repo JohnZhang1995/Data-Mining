@@ -1,0 +1,93 @@
+library(zoo)
+library(plyr)
+library(m537)
+library(m537tools)
+
+sink(file="output.txt",append=TRUE)
+fQ<-read.csv("DM-with-variables.csv")
+#Removing unnecesssary data
+fQ<-fQ[,-c(1,2,3,4,17,29)]
+fQ$gvkey<-as.factor(fQ$gvkey)
+companylist<-split(fQ,fQ$gvkey)
+#Interpolate missing data
+for (c in 1:20) {
+  companydata <- companylist[[c]]
+  for (i in 6:33){
+    for (j in 1963:2018){
+      count<-0
+      for (k in 1:3){
+        if (is.na(companydata[(j-1962)*4+k,i])) {
+          count=count+1
+        }
+      }
+      if (count==3 
+          && !is.na(companydata[(j-1961)*4,i])
+          && !is.na(companydata[(j-1962)*4,i])){
+        companydata[seq(((j-1962)*4),((j-1961)*4)),i]=na.approx(companydata[seq((j-1962)*4,((j-1961)*4)),i])
+      }
+    }
+  }
+  #CalCulate momentum variables
+  #companydata$mom1q<-NA
+  #companydata$mom2q<-NA
+  #companydata$mom1y<-NA
+  #for (i in 2:nrow(companydata)){
+  #  companydata$mom1q[i]<-companydata$prccq[i+1]/companydata$prccq[i]*100
+  #}
+  #for (i in 3:nrow(companydata)){
+  #  companydata$mom2q[i]<-companydata$prccq[i+2]/companydata$prccq[i]*100
+  #}
+  #for (i in 5:nrow(companydata)){
+  #  companydata$mom1y[i]<-companydata$prccq[i+4]/companydata$prccq[i]*100
+  #}
+  companylist[[c]]<-companydata
+}
+
+fQ<-unsplit(companylist, fQ$gvkey)
+
+#Manually calculate market value from price and # of shares outstanding
+for (i in 1:nrow(fQ)){
+  if (is.na(fQ$prccq[i]) || is.na(fQ$cshoq[i])){
+    fQ$mkvaltq[i]<-NA
+  } else {
+    fQ$mkvaltq[i]<-fQ$prccq[i]*fQ$cshoq[i]
+  }
+}
+
+data<-na.omit(fQ[,6:31])
+#Further data structuring
+iv <- data[1:(dim(data)[1]*0.85),]
+test <- data[(dim(data)[1]*0.85):dim(data)[1],]
+numtest <- data$prccq
+test$prccq <- NULL
+price <- iv$prccq
+iv$prccq<-NULL
+#Performing PCA on IVs
+iv.pca<- prcomp(iv,
+         center = TRUE,
+         scale. = TRUE) 
+eigenvalue <- iv.pca$sdev^2
+eigenvalue <- eigenvalue[eigenvalue>1]
+selectedpc <- iv.pca$rotation[,1:length(eigenvalue)]
+#Transform dataset
+iv.pc<- as.matrix(iv) %*% as.matrix(selectedpc)
+#Regression on transformed dataset
+modeldata <- cbind(price=price, iv.pc)
+model<-lm(price~., as.data.frame(modeldata))
+#Getting the result and prediction
+pcrcoef <- as.matrix(model$coefficients[-1])
+varcoef <- selectedpc %*% pcrcoef
+test<-as.matrix(test) %*% as.matrix(selectedpc)
+numpredict <- predict(model,as.data.frame(test))
+
+#write.csv(fQ,'DMProject.csv')
+#Calculate Predictive Residual
+PRESS <- function(linear.model) {
+  #' calculate the predictive residuals
+  pr <- residuals(linear.model)/(1-lm.influence(linear.model)$hat)
+  #' calculate the PRESS
+  PRESS <- sum(pr^2)
+  return(PRESS)
+}
+oossstr = sum((numtest-mean(numpredict))^2)
+
